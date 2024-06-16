@@ -2,8 +2,11 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <concepts>
+#include <format>
+#include <iostream>
 #include <numeric>
 #include <optional>
 #include <print>
@@ -179,6 +182,34 @@ struct Configuration
         if (ccoa.rotated)
             candidate.rotate();
         return candidate.overlaps(placedRect);
+    }
+
+    void write(const std::filesystem::path& filename) const
+    {
+        std::ofstream file(filename);
+
+        if (!file.is_open())
+        {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return;
+        }
+
+        // Write the header
+        file << "x;y;width;height\n";
+        file << std::format("{};{};{};{}\n", container.x, container.y, container.width, container.height);
+
+        // Write the data
+        for (const auto& rectId: packedRectangles)
+        {
+            const auto& rect = allRectangles[rectId];
+            file << std::format("{};{};{};{}\n", rect.x, rect.y, rect.width, rect.height);
+        }
+
+        file.close();
+        if (!file)
+        {
+            std::cerr << "Failed to close file properly: " << filename << std::endl;
+        }
     }
 };
 
@@ -487,23 +518,25 @@ std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
                                                                         const size_t candidateIdx)
     {
         Rectangle candidate = config.allRectangles[candidateIdx];
-        for (auto& [x, y] : sideGen(candidate))
+        for (auto& [x, y]: sideGen(candidate))
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, false);
         }
         candidate.rotate();
-        for (auto& [x, y] : sideGen(candidate))
+        for (auto& [x, y]: sideGen(candidate))
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, true);
         }
     };
-    auto processCandidate = [&genAb, &genRi, &genBe, &genLe, &processSide](const size_t candidateIdx)
+    auto processCandidate =
+        [&genAb, &genRi, &genBe, &genLe, &processSide](const size_t candidateIdx)
     {
         processSide(genAb, candidateIdx);
         processSide(genRi, candidateIdx);
         processSide(genBe, candidateIdx);
         processSide(genLe, candidateIdx);
     };
+    rg::for_each(config.unpackedRectangles, processCandidate);
     return currentCCOAs;
 }
 
@@ -564,11 +597,9 @@ Configuration A0(Configuration&& config, std::vector<CCOA>&& ccoas)
     return config;
 }
 
-Configuration benefitA1(Configuration config,
-                        std::vector<CCOA> ccoas,
-                        const std::vector<CCOA>::iterator selectedCCOA)
+Configuration benefitA1(Configuration config, std::vector<CCOA> ccoas, const size_t selectedCCOAIdx)
 {
-    placeRectangle(config, std::move(ccoas), selectedCCOA);
+    placeRectangle(config, std::move(ccoas), ccoas.begin() + selectedCCOAIdx);
     return A0(std::move(config), std::move(ccoas));
 }
 
@@ -580,9 +611,10 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
     {
         float maxBenefit = 0;
         auto maxBenefitIter = ccoas.begin();
-        for (auto it = ccoas.begin(); it != ccoas.end(); ++it)
+        size_t index = 0;
+        for (auto it = ccoas.begin(); it != ccoas.end(); ++it, ++index)
         {
-            Configuration config = benefitA1(initialConfig, ccoas, it);
+            Configuration config = benefitA1(initialConfig, ccoas, index);
             if (config.isSuccessful())
             {
                 std::println("SUCCESS!!");
@@ -600,7 +632,31 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
     return initialConfig;
 }
 
+bool testCase1()
+{
+    Rectangle container{5, 5};
+    std::vector<Rectangle> toPack{
+        {2, 2},
+        {2, 2},
+        {2, 2},
+        {2, 2},
+        {2, 1},
+        {2, 1},
+        {2, 1},
+        {2, 1},
+        {2, 2},
+    };
+    auto result = A1(container, toPack);
+    std::filesystem::path fname {"output.csv"};
+    result.write(std::filesystem::absolute(fname));
+    return result.isSuccessful();
+}
+
 int main()
 {
+    if (!testCase1())
+    {
+        std::println("Not found solution for testCase1");
+    }
     return 0;
 }
