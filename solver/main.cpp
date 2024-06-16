@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 #include <ranges>
+#include "./cuts.h"
 
 namespace rg = std::ranges;
 namespace rgv = std::ranges::views;
@@ -23,6 +24,14 @@ bool isBetween(T number, T m, T M)
 {
     return m <= number && number <= M;
 }
+
+struct CCOA
+{
+    int rectangleIdx;
+    int x;
+    int y;
+    bool rotated;
+};
 
 struct Rectangle
 {
@@ -44,6 +53,14 @@ struct Rectangle
     void rotate()
     {
         std::swap(width, height);
+    }
+
+    void applyCCOA(const CCOA& ccoa)
+    {
+        x = ccoa.x;
+        y = ccoa.y;
+        if (ccoa.rotated)
+            rotate();
     }
 
     uint area() const
@@ -84,17 +101,9 @@ struct Rectangle
 
     bool contains(const Rectangle& other) const
     {
-        return (isBetween(other.x, x, x + xmax()) && isBetween(other.xmax(), x, x + xmax()) &&
-                isBetween(other.y, y, y + ymax()) && isBetween(other.ymax(), y, y + ymax()));
+        return (isBetween(other.x, x, xmax()) && isBetween(other.xmax(), x, xmax()) &&
+                isBetween(other.y, y, ymax()) && isBetween(other.ymax(), y, ymax()));
     }
-};
-
-struct CCOA
-{
-    int rectangleIdx;
-    int x;
-    int y;
-    bool rotated;
 };
 
 struct Configuration
@@ -127,6 +136,16 @@ struct Configuration
         return static_cast<float>(rg::fold_left(elementsAreas, 0, std::plus{})) / container.area();
     }
 
+    uint noNormDensity() const
+    {
+        auto elementsAreas = packedRectangles | rgv::transform(
+                                                    [this](const size_t id)
+                                                    {
+                                                        return allRectangles[id].area();
+                                                    });
+        return rg::fold_left(elementsAreas, 0, std::plus{});
+    }
+
     /**
      * Returns the min distance between the rectangle and all the rectangles packed in the
      * configuration and container excluding the two edges that are shared
@@ -153,8 +172,8 @@ struct Configuration
             auto dOpt = r.distanceSq(allRectangles[packedRectsIdx]);
             if (!dOpt)
             {
-                assert(false);
                 std::println("Trying to evaluate distance with overlapping rectangles");
+                assert(false);
                 return 0;
             }
             if (uint dSq = *dOpt; dSq == 0 && ++nZeros > 2)
@@ -173,14 +192,11 @@ struct Configuration
     {
         if (placedRectIdx == ccoa.rectangleIdx)
         {
-            return false;
+            return true;
         }
         const Rectangle& placedRect = allRectangles[placedRectIdx];
         Rectangle candidate = allRectangles[ccoa.rectangleIdx];
-        candidate.x = ccoa.x;
-        candidate.y = ccoa.y;
-        if (ccoa.rotated)
-            candidate.rotate();
+        candidate.applyCCOA(ccoa);
         return candidate.overlaps(placedRect);
     }
 
@@ -250,8 +266,7 @@ std::vector<CCOA> calculateInitialCCOAs(const Configuration& config)
 float degree(const CCOA& ccoa, const Configuration& config)
 {
     Rectangle r = config.allRectangles[ccoa.rectangleIdx];
-    if (ccoa.rotated)
-        r.rotate();
+    r.applyCCOA(ccoa);
     return 1. - config.minDistance(r) * 2. / (r.width + r.height);
 }
 
@@ -551,18 +566,14 @@ std::vector<CCOA> placeRectangle(Configuration& config,
     currentCCOAs.erase(selectedCCOA);
     const size_t selectedIdx = ccoa.rectangleIdx;
     Rectangle& r = config.allRectangles[selectedIdx];
-    r.x = ccoa.x;
-    r.y = ccoa.y;
-    if (ccoa.rotated)
-        r.rotate();
+    r.applyCCOA(ccoa);
     config.unpackedRectangles.erase(rg::find(config.unpackedRectangles, selectedIdx));
     config.packedRectangles.push_back(selectedIdx);
 
     auto [first, last] = rg::remove_if(currentCCOAs,
                                        [selectedIdx, &config = std::as_const(config)](const CCOA& c)
                                        {
-                                           return c.rectangleIdx == selectedIdx ||
-                                                  config.isInfeasible(selectedIdx, c);
+                                           return config.isInfeasible(selectedIdx, c);
                                        });
     currentCCOAs.erase(first, last);
 
@@ -599,7 +610,7 @@ Configuration A0(Configuration&& config, std::vector<CCOA>&& ccoas)
 
 Configuration benefitA1(Configuration config, std::vector<CCOA> ccoas, const size_t selectedCCOAIdx)
 {
-    placeRectangle(config, std::move(ccoas), ccoas.begin() + selectedCCOAIdx);
+    ccoas = placeRectangle(config, std::move(ccoas), ccoas.begin() + selectedCCOAIdx);
     return A0(std::move(config), std::move(ccoas));
 }
 
@@ -607,12 +618,18 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
 {
     Configuration initialConfig{container, toPack};
     auto ccoas = calculateInitialCCOAs(initialConfig);
+    auto distToOrgin = [x0 = container.x, y0 = container.y](int x, int y)
+    {
+        int dx = x - x0;
+        int dy = y - y0;
+        return dx * dx + dy * dy;
+    };
     while (!ccoas.empty())
     {
-        float maxBenefit = 0;
-        auto maxBenefitIter = ccoas.begin();
-        size_t index = 0;
-        for (auto it = ccoas.begin(); it != ccoas.end(); ++it, ++index)
+        uint maxBenefit = 0;
+        size_t maxBenefitIndex = 0;
+        std::pair<int, int> maxBenefitCoord{};
+        for (size_t index = 0; index < ccoas.size(); ++index)
         {
             Configuration config = benefitA1(initialConfig, ccoas, index);
             if (config.isSuccessful())
@@ -620,16 +637,74 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
                 std::println("SUCCESS!!");
                 return config;
             }
-            if (float dens = config.density(); dens > maxBenefit)
+            const auto& ccoa = ccoas[index];
+            if (uint dens = config.noNormDensity();
+                dens > maxBenefit ||
+                (dens == maxBenefit &&
+                 distToOrgin(ccoa.x, ccoa.y) <
+                     distToOrgin(maxBenefitCoord.first, maxBenefitCoord.second)))
             {
                 maxBenefit = dens;
-                maxBenefitIter = it;
+                maxBenefitIndex = index;
+                maxBenefitCoord = {ccoa.x, ccoa.y};
             }
         }
-        ccoas = placeRectangle(initialConfig, std::move(ccoas), maxBenefitIter);
+        ccoas = placeRectangle(initialConfig, std::move(ccoas), ccoas.begin() + maxBenefitIndex);
     }
     std::println("Finished without packing all the rectangles");
     return initialConfig;
+}
+
+std::vector<std::vector<Rectangle>> placeAll(const Rectangle& container, std::vector<Rectangle> toPack)
+{
+    std::vector<std::vector<Rectangle>> result;
+    while (!toPack.empty())
+    {
+        auto packed = A1(container, toPack);
+        std::vector<Rectangle> partial;
+        for (const size_t i : packed.packedRectangles)
+        {
+            partial.push_back(packed.allRectangles[i]);
+        }
+        result.push_back(std::move(partial));
+        toPack.clear();
+        for (const size_t i : packed.unpackedRectangles)
+        {
+            toPack.push_back(packed.allRectangles[i]);
+        }
+    }
+    return result;
+}
+
+std::vector<std::vector<Rectangle>> placeAll(Rectangle container,
+                                             std::vector<Rectangle> toPack,
+                                             uint cutThick)
+{
+    cutThick += cutThick % 2;
+    uint half = cutThick / 2;
+    auto enlarge = [cutThick, half](Rectangle& r)
+    {
+        r.width += cutThick;
+        r.height += cutThick;
+        r.x -= half;
+        r.y -= half;
+    };
+    auto reduce = [cutThick, half](Rectangle& r)
+    {
+        r.width -= cutThick;
+        r.height -= cutThick;
+        r.x += half;
+        r.y += half;
+    };
+    enlarge(container);
+    rg::for_each(toPack, enlarge);
+    auto result = placeAll(container, std::move(toPack));
+    rg::for_each(result,
+                 [&reduce](auto& v)
+                 {
+                     rg::for_each(v, reduce);
+                 });
+    return result;
 }
 
 bool testCase1()
@@ -647,16 +722,82 @@ bool testCase1()
         {2, 2},
     };
     auto result = A1(container, toPack);
-    std::filesystem::path fname {"output.csv"};
-    result.write(std::filesystem::absolute(fname));
+    result.write("output.csv");
     return result.isSuccessful();
+}
+
+void writeBoards(const std::string& fnameTemplate, const Rectangle& container, const std::vector<std::vector<Rectangle>>& solutions)
+{
+    for (size_t i = 0; i < solutions.size(); ++i)
+    {
+        auto filename = std::format("{}_{}.csv", fnameTemplate, i);
+        std::ofstream file(filename);
+
+        if (!file.is_open())
+        {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return;
+        }
+
+        // Write the header
+        file << "x;y;width;height\n";
+        file << std::format("{};{};{};{}\n", container.x, container.y, container.width, container.height);
+
+        // Write the data
+        for (const auto& rect: solutions[i])
+        {
+            file << std::format("{};{};{};{}\n", rect.x, rect.y, rect.width, rect.height);
+        }
+
+        file.close();
+        if (!file)
+        {
+            std::cerr << "Failed to close file properly: " << filename << std::endl;
+        }
+    }
+}
+
+void testPackCuts()
+{
+    const Rectangle board {2800, 2100};
+    uint cutThick = 12;
+    std::vector<Rectangle> allRects10;
+    for (auto [w, h] : to10mmBoard)
+    {
+        allRects10.emplace_back(w, h);
+    }
+    std::vector<Rectangle> allRects16;
+    for (auto [w, h] : to16mmBoard)
+    {
+        allRects16.emplace_back(w, h);
+    }
+    auto boardsCut10 = placeAll(board, allRects10, cutThick);
+    auto boardsCut16 = placeAll(board, allRects16, cutThick);
+
+    std::println("We need {} 10mm thick boards", boardsCut10.size());
+    writeBoards("board10mm", board, boardsCut10);
+    std::println("We need {} 16mm thick boards", boardsCut16.size());
+    writeBoards("board16mm", board, boardsCut16);
+}
+
+void testProblematicCase()
+{
+    const Rectangle board {2800, 2100};
+    std::vector<Rectangle> allRects10;
+    for (auto [w, h] : to10mmBoard)
+    {
+        allRects10.emplace_back(w, h);
+        if (allRects10.size() == 10)
+        {
+            break;
+        }
+    }
+    auto sol = A1(board, allRects10);
+    sol.write("problematic.csv");
 }
 
 int main()
 {
-    if (!testCase1())
-    {
-        std::println("Not found solution for testCase1");
-    }
+    testPackCuts();
     return 0;
 }
