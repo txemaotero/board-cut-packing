@@ -494,7 +494,7 @@ public:
     std::vector<std::pair<int, int>> operator()(const Rectangle& candidate) const
     {
         int xMin = xMaxCoord - candidate.width;
-        if (xMin < config.container.y)
+        if (xMin < config.container.x)
             return {};
         std::vector<std::pair<int, int>> result;
 
@@ -521,6 +521,49 @@ private:
     int xMaxCoord;
 };
 
+bool placedRectangleIsOk(const Configuration& config, const Rectangle& placed, size_t skip)
+{
+    uint nZeros = 0;
+    for (const uint d: placed.distanceWithContainer(config.container))
+    {
+        if (d == 0 && ++nZeros == 2)
+        {
+            return true;
+        }
+    }
+    // Same with other rectangles
+    for (const auto& ri: config.packedRectangles)
+    {
+        if (ri == skip)
+            continue;
+        auto dOpt = placed.distanceSq(config.allRectangles[ri]);
+        if (!dOpt)
+            return false;
+        if (*dOpt == 0 && ++nZeros == 2)
+            return true;
+    }
+    return false;
+}
+
+bool placedRectangleIsOk(const Configuration& config, const size_t placedIDx)
+{
+    return placedRectangleIsOk(config, config.allRectangles[placedIDx], placedIDx);
+}
+
+bool ccoasAreOk(const Configuration& config, const std::vector<CCOA>& currentCCOAs)
+{
+    return rg::all_of(currentCCOAs,
+                      [&config](const auto& ccoa)
+                      {
+                          Rectangle r = config.allRectangles[ccoa.rectangleIdx];
+                          r.applyCCOA(ccoa);
+                          bool isOK = placedRectangleIsOk(config, r, ccoa.rectangleIdx);
+                          if (!isOK)
+                              return false;
+                          return isOK;
+                      });
+}
+
 std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
                                       const size_t lastPlacedRectIdx,
                                       std::vector<CCOA>&& currentCCOAs)
@@ -542,6 +585,7 @@ std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, true);
         }
+        assert(ccoasAreOk(config, currentCCOAs));
     };
     auto processCandidate =
         [&genAb, &genRi, &genBe, &genLe, &processSide](const size_t candidateIdx)
@@ -560,15 +604,17 @@ std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
  */
 std::vector<CCOA> placeRectangle(Configuration& config,
                                  std::vector<CCOA>&& currentCCOAs,
-                                 const std::vector<CCOA>::iterator selectedCCOA)
+                                 const size_t selectedCCOAIdx)
 {
-    CCOA ccoa = *selectedCCOA;
-    currentCCOAs.erase(selectedCCOA);
+    CCOA ccoa = currentCCOAs[selectedCCOAIdx];
+    currentCCOAs.erase(currentCCOAs.begin() + selectedCCOAIdx);
     const size_t selectedIdx = ccoa.rectangleIdx;
     Rectangle& r = config.allRectangles[selectedIdx];
     r.applyCCOA(ccoa);
     config.unpackedRectangles.erase(rg::find(config.unpackedRectangles, selectedIdx));
     config.packedRectangles.push_back(selectedIdx);
+
+    assert(placedRectangleIsOk(config, selectedIdx));
 
     auto [first, last] = rg::remove_if(currentCCOAs,
                                        [selectedIdx, &config = std::as_const(config)](const CCOA& c)
@@ -590,27 +636,30 @@ Configuration A0(Configuration&& config, std::vector<CCOA>&& ccoas)
     };
     while (!ccoas.empty())
     {
-        auto maxCCOAIter = ccoas.begin();
-        float maxDegree = degree(*maxCCOAIter, config);
-        for (auto it = ccoas.begin() + 1; it != ccoas.end(); ++it)
+        size_t maxCCOAIdx = 0;
+        std::pair<int, int> maxCCOACoord{};
+        float maxDegree = -1;
+        for (size_t i = 0; const auto& ccoa: ccoas)
         {
-            if (float deg = degree(*it, config);
+            if (float deg = degree(ccoa, config);
                 deg > maxDegree ||
                 (deg == maxDegree &&
-                 distToOrgin(it->x, it->y) < distToOrgin(maxCCOAIter->x, maxCCOAIter->y)))
+                 distToOrgin(ccoa.x, ccoa.y) < distToOrgin(maxCCOACoord.first, maxCCOACoord.second)))
             {
                 maxDegree = deg;
-                maxCCOAIter = it;
+                maxCCOAIdx = i;
+                maxCCOACoord = {ccoa.x, ccoa.y};
             }
+            ++i;
         }
-        ccoas = placeRectangle(config, std::move(ccoas), maxCCOAIter);
+        ccoas = placeRectangle(config, std::move(ccoas), maxCCOAIdx);
     }
     return config;
 }
 
 Configuration benefitA1(Configuration config, std::vector<CCOA> ccoas, const size_t selectedCCOAIdx)
 {
-    ccoas = placeRectangle(config, std::move(ccoas), ccoas.begin() + selectedCCOAIdx);
+    ccoas = placeRectangle(config, std::move(ccoas), selectedCCOAIdx);
     return A0(std::move(config), std::move(ccoas));
 }
 
@@ -629,15 +678,14 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
         uint maxBenefit = 0;
         size_t maxBenefitIndex = 0;
         std::pair<int, int> maxBenefitCoord{};
-        for (size_t index = 0; index < ccoas.size(); ++index)
+        for (size_t index = 0; const CCOA& ccoa: ccoas)
         {
-            Configuration config = benefitA1(initialConfig, ccoas, index);
+            Configuration config = benefitA1(initialConfig, ccoas, index++);
             if (config.isSuccessful())
             {
                 std::println("SUCCESS!!");
                 return config;
             }
-            const auto& ccoa = ccoas[index];
             if (uint dens = config.noNormDensity();
                 dens > maxBenefit ||
                 (dens == maxBenefit &&
@@ -649,7 +697,7 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
                 maxBenefitCoord = {ccoa.x, ccoa.y};
             }
         }
-        ccoas = placeRectangle(initialConfig, std::move(ccoas), ccoas.begin() + maxBenefitIndex);
+        ccoas = placeRectangle(initialConfig, std::move(ccoas), maxBenefitIndex);
     }
     std::println("Finished without packing all the rectangles");
     return initialConfig;
@@ -766,18 +814,18 @@ void testPackCuts()
     {
         allRects10.emplace_back(w, h);
     }
-    std::vector<Rectangle> allRects16;
-    for (auto [w, h] : to16mmBoard)
-    {
-        allRects16.emplace_back(w, h);
-    }
     auto boardsCut10 = placeAll(board, allRects10, cutThick);
-    auto boardsCut16 = placeAll(board, allRects16, cutThick);
-
     std::println("We need {} 10mm thick boards", boardsCut10.size());
-    writeBoards("board10mm", board, boardsCut10);
-    std::println("We need {} 16mm thick boards", boardsCut16.size());
-    writeBoards("board16mm", board, boardsCut16);
+    writeBoards("outputs/board10mm", board, boardsCut10);
+
+    // std::vector<Rectangle> allRects16;
+    // for (auto [w, h] : to16mmBoard)
+    // {
+    //     allRects16.emplace_back(w, h);
+    // }
+    // auto boardsCut16 = placeAll(board, allRects16, cutThick);
+    // std::println("We need {} 16mm thick boards", boardsCut16.size());
+    // writeBoards("outputs/board16mm", board, boardsCut16);
 }
 
 void testProblematicCase()
