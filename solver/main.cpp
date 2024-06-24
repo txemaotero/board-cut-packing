@@ -287,238 +287,325 @@ void addCandidateIfPossible(const Configuration& config,
     }
 }
 
-class PossibleNewPositionGeneratorAbove
+struct Coordinate
 {
-public:
-    const Configuration& config;
-
-    PossibleNewPositionGeneratorAbove(const Configuration& configuration,
-                                      const size_t lastPlacedRectIdx):
-        config(configuration)
-    {
-        const Rectangle& lastPlaced = config.allRectangles[lastPlacedRectIdx];
-        const Rectangle& container = config.container;
-
-        yCoord = lastPlaced.ymax();
-        if (yCoord == container.ymax())
-        {
-            return;
-        }
-        xToCheck.push_back(container.x);
-        for (const size_t packedRectIdx: config.packedRectangles)
-        {
-            const auto& packedRect = config.allRectangles[packedRectIdx];
-            int possibleX = packedRect.xmax();
-            if (packedRect.ymax() > yCoord && possibleX < container.xmax())
-            {
-                xToCheck.push_back(possibleX);
-            }
-        }
-    }
-
-    std::vector<std::pair<int, int>> operator()(const Rectangle& candidate) const
-    {
-        if (yCoord + candidate.height > config.container.ymax())
-            return {};
-        std::vector<std::pair<int, int>> result;
-
-        int lastPossibleX = config.container.xmax() - candidate.width;
-        Rectangle candCopy = candidate;
-        candCopy.y = yCoord;
-        for (const int x: xToCheck)
-        {
-            if (x > lastPossibleX)
-            {
-                break;
-            }
-            candCopy.x = x;
-            addCandidateIfPossible(config, candCopy, result);
-        }
-        // Need to check last one
-        candCopy.x = lastPossibleX;
-        addCandidateIfPossible(config, candCopy, result);
-        return result;
-    }
-
-private:
-    std::vector<int> xToCheck;
-    int yCoord;
+    int x, y;
 };
 
-class PossibleNewPositionGeneratorBellow
+struct DimLimit
 {
-public:
-    const Configuration& config;
+    uint min, max;
 
-    PossibleNewPositionGeneratorBellow(const Configuration& configuration,
-                                       const size_t lastPlacedRectIdx):
-        config(configuration)
+    bool contains(uint v) const
     {
-        const Rectangle& lastPlaced = config.allRectangles[lastPlacedRectIdx];
-        const Rectangle& container = config.container;
-
-        yMaxCoord = lastPlaced.y;
-        if (yMaxCoord == container.y)
-        {
-            return;
-        }
-        xToCheck.push_back(container.x);
-        for (const size_t packedRectIdx: config.packedRectangles)
-        {
-            const auto& packedRect = config.allRectangles[packedRectIdx];
-            int possibleX = packedRect.xmax();
-            if (packedRect.y < yMaxCoord && possibleX < container.xmax())
-            {
-                xToCheck.push_back(possibleX);
-            }
-        }
+        return min <= v && v <= max;
     }
-
-    std::vector<std::pair<int, int>> operator()(const Rectangle& candidate) const
-    {
-        int yMin = yMaxCoord - candidate.height;
-        if (yMin < config.container.y)
-            return {};
-        std::vector<std::pair<int, int>> result;
-
-        int lastPossibleX = config.container.xmax() - candidate.width;
-        Rectangle candCopy = candidate;
-        candCopy.y = yMin;
-        for (const int x: xToCheck)
-        {
-            if (x > lastPossibleX)
-            {
-                break;
-            }
-            candCopy.x = x;
-            addCandidateIfPossible(config, candCopy, result);
-        }
-        // Need to check last one
-        candCopy.x = lastPossibleX;
-        addCandidateIfPossible(config, candCopy, result);
-        return result;
-    }
-
-private:
-    std::vector<int> xToCheck;
-    int yMaxCoord;
 };
 
-class PossibleNewPositionGeneratorRight
+
+enum class EFixedCornerPos
 {
-public:
-    const Configuration& config;
-
-    PossibleNewPositionGeneratorRight(const Configuration& configuration,
-                                      const size_t lastPlacedRectIdx):
-        config(configuration)
-    {
-        const Rectangle& lastPlaced = config.allRectangles[lastPlacedRectIdx];
-        const Rectangle& container = config.container;
-
-        xCoord = lastPlaced.xmax();
-        if (xCoord == container.xmax())
-        {
-            return;
-        }
-        yToCheck.push_back(container.y);
-        for (const size_t packedRectIdx: config.packedRectangles)
-        {
-            const auto& packedRect = config.allRectangles[packedRectIdx];
-            int possibleY = packedRect.ymax();
-            if (packedRect.xmax() > xCoord && possibleY < container.ymax())
-            {
-                yToCheck.push_back(possibleY);
-            }
-        }
-    }
-
-    std::vector<std::pair<int, int>> operator()(const Rectangle& candidate) const
-    {
-        if (xCoord + candidate.width > config.container.xmax())
-            return {};
-        std::vector<std::pair<int, int>> result;
-
-        int lastPossibleY = config.container.ymax() - candidate.height;
-        Rectangle candCopy = candidate;
-        candCopy.x = xCoord;
-        for (const int y: yToCheck)
-        {
-            if (y > lastPossibleY)
-            {
-                break;
-            }
-            candCopy.y = y;
-            addCandidateIfPossible(config, candCopy, result);
-        }
-        // Need to check last one
-        candCopy.y = lastPossibleY;
-        addCandidateIfPossible(config, candCopy, result);
-        return result;
-    }
-
-private:
-    std::vector<int> yToCheck;
-    int xCoord;
+    bottomLeft,
+    bottomRight,
+    topRight,
+    topLeft,
 };
 
-class PossibleNewPositionGeneratorLeft
+struct CandidateLimitFixed
+{
+    Coordinate c;
+    EFixedCornerPos cPos;
+    DimLimit widthLims;
+    DimLimit heigthLims;
+
+    Coordinate getPlacedRectanglePosition(const Rectangle& r) const
+    {
+        switch (cPos)
+        {
+        case EFixedCornerPos::bottomLeft:
+            return c;
+        case EFixedCornerPos::bottomRight:
+            return {c.x - static_cast<int>(r.width), c.y};
+        case EFixedCornerPos::topRight:
+            return {c.x - static_cast<int>(r.width), c.y - static_cast<int>(r.height)};
+        case EFixedCornerPos::topLeft:
+            return {c.x, c.y - static_cast<int>(r.height)};
+        }
+    }
+
+    bool isGoodCandidate(const Rectangle& r) const
+    {
+        return widthLims.contains(r.width) && heigthLims.contains(r.height);
+    }
+};
+
+class PeripheralCandidateGenerator
 {
 public:
-    const Configuration& config;
+    PeripheralCandidateGenerator(const Rectangle& placed,
+                                  const Rectangle& peripheral,
+                                  const Rectangle& container)
+    {
+        // We are on top of placed. Do we see the peripheral?
+        if (peripheral.ymax() > placed.ymax())
+        {
+            if (peripheral.xmax() < placed.xmax())
+            {
+                candLims.push_back({
+                    .c = {peripheral.xmax(), placed.ymax()},
+                    .cPos = EFixedCornerPos::bottomLeft,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.x - peripheral.xmax())),
+                          static_cast<uint>(container.xmax() - peripheral.xmax())},
+                    .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
+                          static_cast<uint>(container.ymax() - placed.ymax())},
+                });
+            }
+            if (peripheral.x > placed.x)
+            {
+                candLims.push_back({
+                    .c = {peripheral.x, placed.ymax()},
+                    .cPos = EFixedCornerPos::bottomRight,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.xmax() - peripheral.x)),
+                          static_cast<uint>(peripheral.x - container.x)},
+                    .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
+                          static_cast<uint>(container.ymax() - placed.ymax())},
+                });
+            }
+        }
+        // We are below the placed. Do we see the peripheral?
+        if (peripheral.y < placed.y)
+        {
+            if (peripheral.xmax() < placed.xmax())
+            {
+                candLims.push_back({
+                    .c = {peripheral.xmax(), placed.y},
+                    .cPos = EFixedCornerPos::topLeft,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.x - peripheral.xmax())),
+                          static_cast<uint>(container.xmax() - peripheral.xmax())},
+                    .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
+                          static_cast<uint>(placed.y - container.y)},
+                });
+            }
+            if (peripheral.x > placed.x)
+            {
+                candLims.push_back({
+                    .c = {peripheral.x, placed.y},
+                    .cPos = EFixedCornerPos::topRight,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.xmax() - peripheral.x)),
+                          static_cast<uint>(peripheral.x - container.x)},
+                    .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
+                          static_cast<uint>(placed.y - container.y)},
+                });
+            }
+        }
 
-    PossibleNewPositionGeneratorLeft(const Configuration& configuration,
-                                     const size_t lastPlacedRectIdx):
+        // We are right to the placed
+        if (peripheral.xmax() > placed.xmax())
+        {
+            if (peripheral.ymax() < placed.ymax())
+            {
+                candLims.push_back({
+                    .c = {placed.xmax(), peripheral.ymax()},
+                    .cPos = EFixedCornerPos::bottomLeft,
+                    .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
+                          static_cast<uint>(container.xmax() - placed.xmax())},
+                    .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
+                          static_cast<uint>(container.ymax() - placed.ymax())},
+                });
+            }
+            if (peripheral.y > placed.y)
+            {
+                candLims.push_back({
+                    .c = {placed.xmax(), peripheral.y},
+                    .cPos = EFixedCornerPos::topLeft,
+                    .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
+                          static_cast<uint>(container.xmax() - peripheral.xmax())},
+                    .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
+                          static_cast<uint>(peripheral.y - container.y)},
+                });
+            }
+        }
+
+        // We are left to the placed
+        if (peripheral.x < placed.x)
+        {
+            if (peripheral.ymax() < placed.ymax())
+            {
+                candLims.push_back({
+                    .c = {placed.x, peripheral.ymax()},
+                    .cPos = EFixedCornerPos::bottomRight,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.x - peripheral.xmax())),
+                          static_cast<uint>(placed.x - container.x)},
+                    .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
+                          static_cast<uint>(container.ymax() - placed.ymax())},
+                });
+            }
+            if (peripheral.y > placed.y)
+            {
+                candLims.push_back({
+                    .c = {placed.x, peripheral.y},
+                    .cPos = EFixedCornerPos::topRight,
+                    .widthLims = {static_cast<uint>(std::max(0, placed.x - peripheral.xmax())),
+                          static_cast<uint>(placed.x - container.x)},
+                    .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
+                          static_cast<uint>(peripheral.y - container.y)},
+                });
+            }
+        }
+    }
+
+    std::vector<Coordinate> operator()(const Rectangle& r) const
+    {
+        std::vector<Coordinate> finalCandidates;
+        for (const CandidateLimitFixed& cl : candLims)
+        {
+            if (cl.isGoodCandidate(r))
+                finalCandidates.push_back(cl.getPlacedRectanglePosition(r));
+        }
+        return finalCandidates;
+    }
+private:
+    std::vector<CandidateLimitFixed> candLims;
+};
+
+class ContainerCandidateGenerator
+{
+public:
+    ContainerCandidateGenerator(const Rectangle& placed, const Rectangle& container)
+    {
+        const auto [dLeft, dRight, dBottom, dTop] = placed.distanceWithContainer(container);
+
+        // We have potentially 8 candidate intervals
+        // Above left
+        CandidateLimitFixed al {
+            .c = {container.x, placed.ymax()},
+            .cPos = EFixedCornerPos::bottomLeft,
+            .widthLims = {dLeft, container.width},
+            .heigthLims = {0, dTop},
+        };
+
+        // Above right
+        CandidateLimitFixed ar {
+            .c = {container.xmax(), placed.ymax()},
+            .cPos = EFixedCornerPos::bottomRight,
+            .widthLims = {dRight, container.width},
+            .heigthLims = {0, dTop},
+        };
+
+        // Bottom left
+        CandidateLimitFixed bl {
+            .c = {container.x, placed.y},
+            .cPos = EFixedCornerPos::topLeft,
+            .widthLims = {dLeft, container.width},
+            .heigthLims = {0, dBottom},
+        };
+
+        // Bottom right
+        CandidateLimitFixed br {
+            .c = {container.xmax(), placed.y},
+            .cPos = EFixedCornerPos::topRight,
+            .widthLims = {dRight, container.width},
+            .heigthLims = {0, dBottom},
+        };
+
+        // left top
+        CandidateLimitFixed lt {
+            .c = {placed.x, container.ymax()},
+            .cPos = EFixedCornerPos::topRight,
+            .widthLims = {0, dLeft},
+            .heigthLims = {dTop, container.height},
+        };
+
+        // left bottom
+        CandidateLimitFixed lb {
+            .c = {placed.x, container.y},
+            .cPos = EFixedCornerPos::bottomRight,
+            .widthLims = {0, dLeft},
+            .heigthLims = {dBottom, container.height},
+        };
+
+        // right top
+        CandidateLimitFixed rt {
+            .c = {placed.xmax(), container.ymax()},
+            .cPos = EFixedCornerPos::topLeft,
+            .widthLims = {0, dRight},
+            .heigthLims = {dTop, container.height},
+        };
+
+        // right bottom
+        CandidateLimitFixed rb {
+            .c = {placed.xmax(), container.y},
+            .cPos = EFixedCornerPos::bottomLeft,
+            .widthLims = {0, dRight},
+            .heigthLims = {dBottom, container.height},
+        };
+
+        candLims = {al, ar, bl, br, lt, lb, rt, rb};
+    }
+
+    std::vector<Coordinate> operator()(const Rectangle& r) const
+    {
+        std::vector<Coordinate> finalCandidates;
+        for (const CandidateLimitFixed& cl : candLims)
+        {
+            if (cl.isGoodCandidate(r))
+                finalCandidates.push_back(cl.getPlacedRectanglePosition(r));
+        }
+        return finalCandidates;
+    }
+
+private:
+    std::array<CandidateLimitFixed, 8> candLims;
+};
+
+using CandidateGenerator = std::variant<PeripheralCandidateGenerator, ContainerCandidateGenerator>;
+
+class PossibleNewPositionGenerator
+{
+public:
+    PossibleNewPositionGenerator(const Configuration& configuration,
+                                 const size_t lastPlacedRectIdx):
         config(configuration)
     {
         const Rectangle& lastPlaced = config.allRectangles[lastPlacedRectIdx];
         const Rectangle& container = config.container;
-
-        xMaxCoord = lastPlaced.x;
-        if (xMaxCoord == container.x)
+        auto packedRects = config.packedRectangles |
+                           rgv::filter(
+                               [lastPlacedRectIdx](auto i)
+                               {
+                                   return i == lastPlacedRectIdx;
+                               }) |
+                           rgv::transform(
+                               [this](auto i) -> const auto&
+                               {
+                                   return config.allRectangles[i];
+                               });
+        for (const auto& rect: packedRects)
         {
-            return;
+            candGens.emplace_back(PeripheralCandidateGenerator(lastPlaced, rect, container));
         }
-        yToCheck.push_back(container.y);
-        for (const size_t packedRectIdx: config.packedRectangles)
-        {
-            const auto& packedRect = config.allRectangles[packedRectIdx];
-            int possibleY = packedRect.ymax();
-            if (packedRect.x < xMaxCoord && possibleY < container.ymax())
-            {
-                yToCheck.push_back(possibleY);
-            }
-        }
+        candGens.emplace_back(ContainerCandidateGenerator(lastPlaced, container));
     }
 
-    std::vector<std::pair<int, int>> operator()(const Rectangle& candidate) const
+    std::vector<Coordinate> operator()(const Rectangle& candidate) const
     {
-        int xMin = xMaxCoord - candidate.width;
-        if (xMin < config.container.x)
-            return {};
-        std::vector<std::pair<int, int>> result;
-
-        int lastPossibleY = config.container.ymax() - candidate.height;
-        Rectangle candCopy = candidate;
-        candCopy.x = xMin;
-        for (const int y: yToCheck)
+        std::vector<Coordinate> result;
+        for (const auto& cg : candGens)
         {
-            if (y > lastPossibleY)
-            {
-                break;
-            }
-            candCopy.y = y;
-            addCandidateIfPossible(config, candCopy, result);
+            const auto cands = std::visit(
+                [&candidate](const auto& v)
+                {
+                    return v(candidate);
+                },
+                cg);
+            result.insert(result.end(), cands.begin(), cands.end());
         }
-        // Need to check last one
-        candCopy.y = lastPossibleY;
-        addCandidateIfPossible(config, candCopy, result);
         return result;
     }
 
 private:
-    std::vector<int> yToCheck;
-    int xMaxCoord;
+    const Configuration& config;
+    std::vector<CandidateGenerator> candGens;
 };
 
 bool placedRectangleIsOk(const Configuration& config, const Rectangle& placed, size_t skip)
@@ -568,34 +655,23 @@ std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
                                       const size_t lastPlacedRectIdx,
                                       std::vector<CCOA>&& currentCCOAs)
 {
-    const PossibleNewPositionGeneratorAbove genAb(config, lastPlacedRectIdx);
-    const PossibleNewPositionGeneratorRight genRi(config, lastPlacedRectIdx);
-    const PossibleNewPositionGeneratorBellow genBe(config, lastPlacedRectIdx);
-    const PossibleNewPositionGeneratorLeft genLe(config, lastPlacedRectIdx);
-    auto processSide = [&currentCCOAs, &config = std::as_const(config)](const auto& sideGen,
-                                                                        const size_t candidateIdx)
+    const PossibleNewPositionGenerator gen(config, lastPlacedRectIdx);
+    auto processGen =
+        [&gen, &currentCCOAs, &config = std::as_const(config)](const size_t candidateIdx)
     {
         Rectangle candidate = config.allRectangles[candidateIdx];
-        for (auto& [x, y]: sideGen(candidate))
+        for (auto& [x, y]: gen(candidate))
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, false);
         }
         candidate.rotate();
-        for (auto& [x, y]: sideGen(candidate))
+        for (auto& [x, y]: gen(candidate))
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, true);
         }
         assert(ccoasAreOk(config, currentCCOAs));
     };
-    auto processCandidate =
-        [&genAb, &genRi, &genBe, &genLe, &processSide](const size_t candidateIdx)
-    {
-        processSide(genAb, candidateIdx);
-        processSide(genRi, candidateIdx);
-        processSide(genBe, candidateIdx);
-        processSide(genLe, candidateIdx);
-    };
-    rg::for_each(config.unpackedRectangles, processCandidate);
+    rg::for_each(config.unpackedRectangles, processGen);
     return currentCCOAs;
 }
 
