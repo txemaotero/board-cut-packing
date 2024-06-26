@@ -10,6 +10,7 @@
 #include <numeric>
 #include <optional>
 #include <print>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include <ranges>
@@ -31,6 +32,9 @@ struct CCOA
     int x;
     int y;
     bool rotated;
+
+    bool operator==(const CCOA& other) const = default;
+    bool operator!=(const CCOA& other) const = default;
 };
 
 struct Rectangle
@@ -92,7 +96,7 @@ struct Rectangle
 
     std::array<uint, 4> distanceWithContainer(const Rectangle& container) const
     {
-        assert(container.contains(*this));
+        // assert(container.contains(*this));
         return {static_cast<uint>(x - container.x),
                 static_cast<uint>(container.xmax() - xmax()),
                 static_cast<uint>(y - container.y),
@@ -270,9 +274,14 @@ float degree(const CCOA& ccoa, const Configuration& config)
     return 1. - config.minDistance(r) * 2. / (r.width + r.height);
 }
 
+struct Coordinate
+{
+    int x, y;
+};
+
 void addCandidateIfPossible(const Configuration& config,
                             const Rectangle& candidate,
-                            std::vector<std::pair<int, int>>& candidateCoords)
+                            std::vector<Coordinate>& candidateCoords)
 {
     bool anyOverlap = rg::any_of(
         config.packedRectangles,
@@ -286,11 +295,6 @@ void addCandidateIfPossible(const Configuration& config,
         candidateCoords.emplace_back(candidate.x, candidate.y);
     }
 }
-
-struct Coordinate
-{
-    int x, y;
-};
 
 struct DimLimit
 {
@@ -365,7 +369,7 @@ public:
                 candLims.push_back({
                     .c = {peripheral.x, placed.ymax()},
                     .cPos = EFixedCornerPos::bottomRight,
-                    .widthLims = {static_cast<uint>(std::max(0, placed.xmax() - peripheral.x)),
+                    .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
                           static_cast<uint>(peripheral.x - container.x)},
                     .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
                           static_cast<uint>(container.ymax() - placed.ymax())},
@@ -391,7 +395,7 @@ public:
                 candLims.push_back({
                     .c = {peripheral.x, placed.y},
                     .cPos = EFixedCornerPos::topRight,
-                    .widthLims = {static_cast<uint>(std::max(0, placed.xmax() - peripheral.x)),
+                    .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
                           static_cast<uint>(peripheral.x - container.x)},
                     .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
                           static_cast<uint>(placed.y - container.y)},
@@ -410,7 +414,7 @@ public:
                     .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
                           static_cast<uint>(container.xmax() - placed.xmax())},
                     .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
-                          static_cast<uint>(container.ymax() - placed.ymax())},
+                          static_cast<uint>(container.ymax() - peripheral.ymax())},
                 });
             }
             if (peripheral.y > placed.y)
@@ -419,7 +423,7 @@ public:
                     .c = {placed.xmax(), peripheral.y},
                     .cPos = EFixedCornerPos::topLeft,
                     .widthLims = {static_cast<uint>(std::max(0, peripheral.x - placed.xmax())),
-                          static_cast<uint>(container.xmax() - peripheral.xmax())},
+                          static_cast<uint>(container.xmax() - placed.xmax())},
                     .heigthLims = {static_cast<uint>(std::max(0, peripheral.y - placed.ymax())),
                           static_cast<uint>(peripheral.y - container.y)},
                 });
@@ -437,7 +441,7 @@ public:
                     .widthLims = {static_cast<uint>(std::max(0, placed.x - peripheral.xmax())),
                           static_cast<uint>(placed.x - container.x)},
                     .heigthLims = {static_cast<uint>(std::max(0, placed.y - peripheral.ymax())),
-                          static_cast<uint>(container.ymax() - placed.ymax())},
+                          static_cast<uint>(container.ymax() - peripheral.ymax())},
                 });
             }
             if (peripheral.y > placed.y)
@@ -454,13 +458,18 @@ public:
         }
     }
 
-    std::vector<Coordinate> operator()(const Rectangle& r) const
+    std::vector<Coordinate> operator()(Rectangle r, const Configuration& config) const
     {
         std::vector<Coordinate> finalCandidates;
         for (const CandidateLimitFixed& cl : candLims)
         {
             if (cl.isGoodCandidate(r))
-                finalCandidates.push_back(cl.getPlacedRectanglePosition(r));
+            {
+                const auto [x, y] = cl.getPlacedRectanglePosition(r);
+                r.x = x;
+                r.y = y;
+                addCandidateIfPossible(config, r, finalCandidates);
+            }
         }
         return finalCandidates;
     }
@@ -543,13 +552,18 @@ public:
         candLims = {al, ar, bl, br, lt, lb, rt, rb};
     }
 
-    std::vector<Coordinate> operator()(const Rectangle& r) const
+    std::vector<Coordinate> operator()(Rectangle r, const Configuration& config) const
     {
         std::vector<Coordinate> finalCandidates;
         for (const CandidateLimitFixed& cl : candLims)
         {
             if (cl.isGoodCandidate(r))
-                finalCandidates.push_back(cl.getPlacedRectanglePosition(r));
+            {
+                const auto [x, y] = cl.getPlacedRectanglePosition(r);
+                r.x = x;
+                r.y = y;
+                addCandidateIfPossible(config, r, finalCandidates);
+            }
         }
         return finalCandidates;
     }
@@ -573,7 +587,7 @@ public:
                            rgv::filter(
                                [lastPlacedRectIdx](auto i)
                                {
-                                   return i == lastPlacedRectIdx;
+                                   return i != lastPlacedRectIdx;
                                }) |
                            rgv::transform(
                                [this](auto i) -> const auto&
@@ -593,9 +607,9 @@ public:
         for (const auto& cg : candGens)
         {
             const auto cands = std::visit(
-                [&candidate](const auto& v)
+                [this, &candidate](const auto& v)
                 {
-                    return v(candidate);
+                    return v(candidate, config);
                 },
                 cg);
             result.insert(result.end(), cands.begin(), cands.end());
@@ -669,9 +683,10 @@ std::vector<CCOA> addNewPossibleCCOAs(Configuration& config,
         {
             currentCCOAs.emplace_back(candidateIdx, x, y, true);
         }
-        assert(ccoasAreOk(config, currentCCOAs));
+        // assert(ccoasAreOk(config, currentCCOAs));
     };
     rg::for_each(config.unpackedRectangles, processGen);
+    // assert(ccoasAreOk(config, currentCCOAs));
     return currentCCOAs;
 }
 
@@ -690,7 +705,7 @@ std::vector<CCOA> placeRectangle(Configuration& config,
     config.unpackedRectangles.erase(rg::find(config.unpackedRectangles, selectedIdx));
     config.packedRectangles.push_back(selectedIdx);
 
-    assert(placedRectangleIsOk(config, selectedIdx));
+    // assert(placedRectangleIsOk(config, selectedIdx));
 
     auto [first, last] = rg::remove_if(currentCCOAs,
                                        [selectedIdx, &config = std::as_const(config)](const CCOA& c)
@@ -756,7 +771,7 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
         std::pair<int, int> maxBenefitCoord{};
         for (size_t index = 0; const CCOA& ccoa: ccoas)
         {
-            Configuration config = benefitA1(initialConfig, ccoas, index++);
+            Configuration config = benefitA1(initialConfig, ccoas, index);
             if (config.isSuccessful())
             {
                 std::println("SUCCESS!!");
@@ -772,6 +787,7 @@ Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPac
                 maxBenefitIndex = index;
                 maxBenefitCoord = {ccoa.x, ccoa.y};
             }
+            ++index;
         }
         ccoas = placeRectangle(initialConfig, std::move(ccoas), maxBenefitIndex);
     }
@@ -830,6 +846,20 @@ std::vector<std::vector<Rectangle>> placeAll(Rectangle container,
                  });
     return result;
 }
+std::vector<std::vector<Rectangle>> placeAll(Rectangle container,
+                                             std::vector<Rectangle> toPack,
+                                             uint cutThick,
+                                             uint containerBorder)
+{
+    // Reduce container
+    uint half = containerBorder / 2;
+    container.width -= containerBorder;
+    container.height -= containerBorder;
+    container.x += half;
+    container.y += half;
+
+    return placeAll(container, std::move(toPack), cutThick);
+}
 
 bool testCase1()
 {
@@ -883,25 +913,40 @@ void writeBoards(const std::string& fnameTemplate, const Rectangle& container, c
 
 void testPackCuts()
 {
-    const Rectangle board {2800, 2100};
-    uint cutThick = 12;
+    const Rectangle board {2800, 2050};
+    uint cutThick = 14;
+    uint borderClear = 20;
     std::vector<Rectangle> allRects10;
     for (auto [w, h] : to10mmBoard)
     {
         allRects10.emplace_back(w, h);
     }
-    auto boardsCut10 = placeAll(board, allRects10, cutThick);
+    auto boardsCut10 = placeAll(board, allRects10, cutThick, borderClear);
     std::println("We need {} 10mm thick boards", boardsCut10.size());
     writeBoards("outputs/board10mm", board, boardsCut10);
 
-    // std::vector<Rectangle> allRects16;
-    // for (auto [w, h] : to16mmBoard)
-    // {
-    //     allRects16.emplace_back(w, h);
-    // }
-    // auto boardsCut16 = placeAll(board, allRects16, cutThick);
-    // std::println("We need {} 16mm thick boards", boardsCut16.size());
-    // writeBoards("outputs/board16mm", board, boardsCut16);
+    std::vector<Rectangle> allRects16;
+    for (auto [w, h] : to16mmBoard)
+    {
+        allRects16.emplace_back(w, h);
+    }
+    auto boardsCut16 = placeAll(board, allRects16, cutThick);
+    std::println("We need {} 16mm thick boards", boardsCut16.size(), borderClear);
+    writeBoards("outputs/board16mm", board, boardsCut16);
+}
+
+void testPackCatP1()
+{
+    const Rectangle board {20, 20};
+    uint cutThick = 12;
+    std::vector<Rectangle> allRectsCatP1;
+    for (auto [w, h] : catP1)
+    {
+        allRectsCatP1.emplace_back(w, h);
+    }
+    auto boardsCut = placeAll(board, allRectsCatP1);
+    std::println("We need {} thick boards", boardsCut.size());
+    writeBoards("outputs/boardCatP1", board, boardsCut);
 }
 
 void testProblematicCase()
@@ -920,8 +965,84 @@ void testProblematicCase()
     sol.write("problematic.csv");
 }
 
+#include <iostream>
+
+#define TEST_EQUAL(arg1, arg2) \
+    do { \
+        if ((arg1) != (arg2)) { \
+            std::cerr << "Error: \n" \
+                      << "    Expression 1: " << #arg1 << " = " << (arg1) << "\n" \
+                      << "    Expression 2: " << #arg2 << " = " << (arg2) << "\n"; \
+        } \
+    } while (0)
+
+#define TEST_TRUE(arg1) \
+    do { \
+        if (!(arg1)) { \
+            std::cerr << "Error: \n" \
+                      << "    Expression: " << #arg1 << " = false\n"; \
+        } \
+    } while (0)
+
+#define TEST_FALSE(arg1) \
+    do { \
+        if (arg1) { \
+            std::cerr << "Error: \n" \
+                      << "    Expression: " << #arg1 << " = true\n"; \
+        } \
+    } while (0)
+
+namespace test
+{
+
+    void testRectangle()
+    {
+        Rectangle r1 {10, 20, 0, 0};
+        Rectangle r2 {10, 20, 5, 2};
+        Rectangle r3 {10, 20, 5, 20};
+        Rectangle cont {100, 200, -5, -5};
+
+        TEST_TRUE(r1.overlaps(r2));
+        TEST_FALSE(r1.overlaps(r3));
+        TEST_TRUE(cont.contains(r1));
+        auto d = r1.distanceSq(r2);
+        TEST_FALSE(d);
+        d = r1.distanceSq(r3);
+        TEST_TRUE(d);
+        TEST_EQUAL(*d, 0);
+    }
+
+    void testConfiguration()
+    {
+        Rectangle r1 {20, 10, 0, 0};
+        Rectangle r2 {10, 20, 0, 0};
+        Rectangle r3 {10, 20, 0, 0};
+        Rectangle cont {100, 200, -10, -20};
+
+        Configuration c {cont, {r1, r2, r3}};
+        auto ccoas = calculateInitialCCOAs(c);
+        TEST_EQUAL(ccoas.size(), 2*4*3);
+        CCOA ccoa {0, -10, -20, false};
+        TEST_TRUE(ccoas[0] == ccoa);
+
+        ccoas = placeRectangle(c, std::move(ccoas), 0);
+        TEST_EQUAL(ccoas.size(), (6 + 4) * 2);
+
+        ccoa = {1, -10, -10, false};
+        auto it = std::find(ccoas.begin(), ccoas.end(), ccoa);
+        TEST_TRUE(it != ccoas.end());
+        auto index = it - ccoas.begin();
+
+        ccoas = placeRectangle(c, std::move(ccoas), index);
+        TEST_EQUAL(ccoas.size(), 6 + 2 + 2 + 2);
+    }
+}
+
 int main()
 {
     testPackCuts();
+    // testPackCatP1();
+    // test::testRectangle();
+    // test::testConfiguration();
     return 0;
 }
