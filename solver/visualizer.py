@@ -100,7 +100,8 @@ def plot_rectangles(rectangles, title):
 if __name__ == "__main__":
     from glob import glob
 
-    filenames = glob("board*mm_*.csv")
+    filenames = glob("outputs/board*mm_*.csv")
+    # filenames = glob("outputs/boardCatP1*.csv")
     # filenames = ["./problematic.csv"]
     for fname in filenames:
         rectangles = read_csv(fname)

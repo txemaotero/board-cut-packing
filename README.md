@@ -8,7 +8,7 @@ Implement the algorithm described [here](https://www.sciencedirect.com/science/a
 
 ## TODO
 
-- [ ] Have a working version in a single `cpp` file
+- [X] Have a working version in a single `cpp` file
 - [ ] Parallelize the code (try using `<execution>`) and std algorithms
 - [ ] Restructure the code in cpp modules
 - [ ] Introduce cross platform building with cmake
