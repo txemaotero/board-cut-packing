@@ -2,6 +2,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <concepts>
@@ -28,7 +29,7 @@ bool isBetween(T number, T m, T M)
 
 struct CCOA
 {
-    int rectangleIdx;
+    size_t rectangleIdx;
     int x;
     int y;
     bool rotated;
@@ -246,7 +247,7 @@ std::vector<CCOA> calculateInitialCCOAs(const Configuration& config)
                 result.emplace_back(rectIdx, r.x, r.y, rot);
         };
         auto check4pos =
-            [&checkAndPush, &container = config.container, rectIdx](Rectangle& r, bool rot)
+            [&checkAndPush, &container = config.container](Rectangle& r, bool rot)
         {
             r.x = container.x;
             r.y = container.y;
@@ -938,7 +939,6 @@ void testPackCuts()
 void testPackCatP1()
 {
     const Rectangle board {20, 20};
-    uint cutThick = 12;
     std::vector<Rectangle> allRectsCatP1;
     for (auto [w, h] : catP1)
     {

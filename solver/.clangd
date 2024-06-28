@@ -1,2 +1,4 @@
 CompileFlags:
-  Add: [-std=c++23, -stdlib=libc++, -ferror-limit=0]
+  Remove: -f*
+  Add: [-std=c++23, -Wall, -Wextra, -ltbb, -ferror-limit=0]
+  Compiler: /usr/local/gcc-14.1.0/bin/g++

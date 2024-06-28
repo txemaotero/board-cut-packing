@@ -14,3 +14,13 @@ Implement the algorithm described [here](https://www.sciencedirect.com/science/a
 - [ ] Introduce cross platform building with cmake
 - [ ] Define python bindings
 - [ ] Implemente a simple web app using streamlit
+
+## Parallel execution
+
+To be able to compile (on Ubuntu 22.04) with support for parallel algorithms and
+c++23 features such as the `print` library, I needed to install the
+`libtbb-dev`` package and compile with:
+```bash
+g++ -std=c++23 -ltbb main.cpp
+```
+I used the gcc 14.1.0 version.
