@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <execution>
 #include <cassert>
 #include <cmath>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <concepts>
@@ -28,7 +31,7 @@ bool isBetween(T number, T m, T M)
 
 struct CCOA
 {
-    int rectangleIdx;
+    size_t rectangleIdx;
     int x;
     int y;
     bool rotated;
@@ -246,7 +249,7 @@ std::vector<CCOA> calculateInitialCCOAs(const Configuration& config)
                 result.emplace_back(rectIdx, r.x, r.y, rot);
         };
         auto check4pos =
-            [&checkAndPush, &container = config.container, rectIdx](Rectangle& r, bool rot)
+            [&checkAndPush, &container = config.container](Rectangle& r, bool rot)
         {
             r.x = container.x;
             r.y = container.y;
@@ -335,6 +338,8 @@ struct CandidateLimitFixed
         case EFixedCornerPos::topLeft:
             return {c.x, c.y - static_cast<int>(r.height)};
         }
+        assert(false);
+        return c;
     }
 
     bool isGoodCandidate(const Rectangle& r) const
@@ -754,42 +759,83 @@ Configuration benefitA1(Configuration config, std::vector<CCOA> ccoas, const siz
     return A0(std::move(config), std::move(ccoas));
 }
 
+struct MaxBenefitInfo
+{
+    uint benefit = 0;
+    size_t idx = 0;
+    Coordinate c{};
+    const Coordinate origin;
+
+    MaxBenefitInfo(const Coordinate& orig) : origin(orig) {}
+
+    uint distToOrgin(const int x, const int y)
+    {
+        int dx = x - origin.x;
+        int dy = y - origin.y;
+        return dx * dx + dy * dy;
+    }
+
+    void update(const uint& dens, const CCOA& ccoa, const size_t index)
+    {
+        if (dens > benefit ||
+            (dens == benefit && distToOrgin(ccoa.x, ccoa.y) < distToOrgin(c.x, c.y)))
+        {
+            benefit = dens;
+            idx = index;
+            c = {ccoa.x, ccoa.y};
+        }
+    }
+};
+
 Configuration A1(const Rectangle& container, const std::vector<Rectangle>& toPack)
 {
     Configuration initialConfig{container, toPack};
     auto ccoas = calculateInitialCCOAs(initialConfig);
-    auto distToOrgin = [x0 = container.x, y0 = container.y](int x, int y)
-    {
-        int dx = x - x0;
-        int dy = y - y0;
-        return dx * dx + dy * dy;
-    };
     while (!ccoas.empty())
     {
-        uint maxBenefit = 0;
-        size_t maxBenefitIndex = 0;
-        std::pair<int, int> maxBenefitCoord{};
-        for (size_t index = 0; const CCOA& ccoa: ccoas)
+
+        std::mutex mtx;
+        Configuration solutionConfig = initialConfig;
+
+        std::atomic_bool foundSol = false;
+        std::vector<std::pair<size_t, CCOA>> idxsCcoa;
+        idxsCcoa.reserve(ccoas.size());
+        std::transform(ccoas.begin(),
+                       ccoas.end(),
+                   std::back_inserter(idxsCcoa),
+                   [i = 0](const CCOA& ccoa) mutable -> std::pair<size_t, CCOA>
+                       {
+                           return {i++, ccoa};
+                       });
+        MaxBenefitInfo maxInfo({container.x, container.y});
+        std::for_each(
+            std::execution::par_unseq,
+            idxsCcoa.begin(),
+            idxsCcoa.end(),
+            [&foundSol, &solutionConfig, &mtx, &initialConfig, &ccoas, &maxInfo](const auto& idxCcoa)
+            {
+                const auto& [index, ccoa] = idxCcoa;
+                if (foundSol)
+                    return;
+
+                Configuration config = benefitA1(initialConfig, ccoas, index);
+                if (config.isSuccessful())
+                {
+                    foundSol = true;
+                    const std::lock_guard g(mtx);
+                    solutionConfig = config;
+                    return;
+                }
+                const uint dens = config.noNormDensity();
+                maxInfo.update(dens, ccoa, index);
+            });
+
+        if (foundSol)
         {
-            Configuration config = benefitA1(initialConfig, ccoas, index);
-            if (config.isSuccessful())
-            {
-                std::println("SUCCESS!!");
-                return config;
-            }
-            if (uint dens = config.noNormDensity();
-                dens > maxBenefit ||
-                (dens == maxBenefit &&
-                 distToOrgin(ccoa.x, ccoa.y) <
-                     distToOrgin(maxBenefitCoord.first, maxBenefitCoord.second)))
-            {
-                maxBenefit = dens;
-                maxBenefitIndex = index;
-                maxBenefitCoord = {ccoa.x, ccoa.y};
-            }
-            ++index;
+            std::println("SUCCESS!!");
+            return solutionConfig;
         }
-        ccoas = placeRectangle(initialConfig, std::move(ccoas), maxBenefitIndex);
+        ccoas = placeRectangle(initialConfig, std::move(ccoas), maxInfo.idx);
     }
     std::println("Finished without packing all the rectangles");
     return initialConfig;
@@ -935,10 +981,27 @@ void testPackCuts()
     writeBoards("outputs/board16mm", board, boardsCut16);
 }
 
+void testLargeProfile()
+{
+    const Rectangle board {2800, 2050};
+    uint cutThick = 14;
+    uint borderClear = 20;
+
+    std::vector<Rectangle> allRects16;
+    for (int i = 0; i < 2; ++i)
+    {
+        for (auto [w, h]: to16mmBoard)
+        {
+            allRects16.emplace_back(w, h);
+        }
+    }
+    auto boardsCut16 = placeAll(board, allRects16, cutThick, borderClear);
+    std::println("We need {} 16mm thick boards", boardsCut16.size());
+}
+
 void testPackCatP1()
 {
     const Rectangle board {20, 20};
-    uint cutThick = 12;
     std::vector<Rectangle> allRectsCatP1;
     for (auto [w, h] : catP1)
     {
@@ -1040,7 +1103,8 @@ namespace test
 
 int main()
 {
-    testPackCuts();
+    // testPackCuts();
+    testLargeProfile();
     // testPackCatP1();
     // test::testRectangle();
     // test::testConfiguration();
